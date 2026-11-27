@@ -1,0 +1,113 @@
+import { createClient, type GenericCtx } from "@convex-dev/better-auth";
+import { convex } from "@convex-dev/better-auth/plugins";
+import { components, internal } from "./_generated/api";
+import { DataModel } from "./_generated/dataModel";
+import { action, query } from "./_generated/server";
+import { betterAuth } from "better-auth/minimal";
+import authConfig from "./auth.config";
+
+const siteUrl = process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+
+// The component client has methods needed for integrating Convex with Better Auth,
+// as well as helper methods for general use.
+export const authComponent = createClient<DataModel>(components.betterAuth);
+
+export const createAuth = (ctx: GenericCtx<DataModel>) => {
+  return betterAuth({
+    baseURL: siteUrl,
+    secret: process.env.BETTER_AUTH_SECRET,
+    trustedOrigins: [
+      "http://localhost:3000",
+      "https://linksysfiber.ke",
+      "https://www.linksysfiber.ke",
+      siteUrl,
+    ].filter(Boolean),
+    database: authComponent.adapter(ctx),
+    databaseHooks: {
+      user: {
+        create: {
+          after: async (user) => {
+            if ("runMutation" in ctx) {
+              try {
+                await ctx.runMutation(internal.users.createUserProfileFromAuth, {
+                  userId: (user as any).id || (user as any)._id,
+                  email: user.email || "",
+                  name: user.name || "User",
+                  image: user.image ?? undefined,
+                  phone: (user as any).phoneNumber ?? undefined,
+                });
+              } catch (error) {
+                console.error("Failed to auto-create Convex user profile in databaseHook:", error);
+              }
+            }
+          },
+        },
+        update: {
+          after: async (user) => {
+            if ("runMutation" in ctx) {
+              try {
+                await ctx.runMutation(internal.users.createUserProfileFromAuth, {
+                  userId: (user as any).id || (user as any)._id,
+                  email: user.email || "",
+                  name: user.name || "User",
+                  image: user.image ?? undefined,
+                  phone: (user as any).phoneNumber ?? undefined,
+                });
+              } catch (error) {
+                console.error("Failed to sync Convex user profile on update:", error);
+              }
+            }
+          },
+        },
+      },
+    },
+    // Configure email/password with Resend reset password function
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: false,
+      async sendResetPassword({ user, url }) {
+        // Call our HTTP endpoint to send the password reset email
+        try {
+          const convexUrl = process.env.CONVEX_SITE_URL || process.env.NEXT_PUBLIC_CONVEX_URL || "http://localhost:3001";
+          
+          const response = await fetch(`${convexUrl}/api/sendPasswordResetEmail`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+              email: user.email, 
+              url 
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to send email: ${response.statusText}`);
+          }
+        } catch (error) {
+          console.error("Failed to send password reset email:", error);
+          // Don't throw - better-auth should continue even if email fails
+        }
+      },
+    },
+    plugins: [
+      // The Convex plugin is required for Convex compatibility
+      convex({ authConfig, jwksRotateOnTokenGenerationError: true }),
+    ],
+  });
+};
+
+// Example function for getting the current user
+// Feel free to edit, omit, etc.
+export const getCurrentUser = query({
+  args: {},
+  handler: async (ctx) => {
+    return authComponent.safeGetAuthUser(ctx);
+  },
+});
+
+export const rotateKeys = action({
+  args: {},
+  handler: async (ctx) => {
+    const auth = createAuth(ctx);
+    return await auth.api.rotateKeys();
+  },
+});
